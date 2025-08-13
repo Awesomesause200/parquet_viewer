@@ -78,6 +78,7 @@ def display():
         flash("No file loaded. Please upload or provide S3 URI.")
         return redirect(url_for('home'))
     dtypes = current_df.dtypes.astype(str).to_dict()
+    dtypes = {k: v if v != 'object' else 'string' for k, v in dtypes.items()}
     html_table = current_df.to_html(classes='table table-dark table-striped text-center', index=False)
     return render_template('display.html', tables=Markup(html_table), dtypes=dtypes, filename=current_filename)
 
@@ -167,6 +168,7 @@ def change_dtypes():
         return redirect(url_for('display'))
 
     current_dtypes = current_df.dtypes.astype(str).to_dict()
+    current_dtypes = {k: v if v != 'object' else 'string' for k, v in current_dtypes.items()}
     return render_template('change_dtypes.html', columns=current_df.columns, dtypes=current_dtypes, options=dtype_options)
 
 
