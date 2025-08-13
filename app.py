@@ -1,5 +1,5 @@
 # flask_parquet_app.py
-from flask import Flask, render_template, request, redirect, url_for, send_file, flash, jsonify
+from flask import Flask, render_template, request, redirect, url_for, send_file, flash, jsonify, session
 from markupsafe import Markup
 import pandas as pd
 import os
@@ -20,8 +20,18 @@ current_df: pd.DataFrame = pd.DataFrame()
 original_df: pd.DataFrame = pd.DataFrame()
 current_filename: str | None = None
 
-# Threshold for conversion null ratio alert (e.g., 0.05 for 5%)
-NULL_RATIO_ALERT_THRESHOLD = 0.05
+# Global dictionary for default settings. This is now the single source of truth.
+DEFAULT_SETTINGS = {
+    'null_ratio_alert_threshold': {
+        'name': 'Null Ratio Alert Threshold',
+        'type': 'range',
+        'value': 0.05,
+        'min': 0,
+        'max': 1,
+        'step': 0.01,
+        'description': 'Show a warning if converting a column creates more than this percentage of null values.'
+    }
+}
 
 
 # Load from S3 or local file
@@ -46,6 +56,11 @@ def load_dataframe(file, is_s3=False):
 def home():
     global current_df, original_df, current_filename, global_warnings
     global_warnings = []
+
+    # Initialize settings in the session if they don't exist
+    if 'settings' not in session:
+        session['settings'] = DEFAULT_SETTINGS.copy()  # Use .copy() to prevent modifying the global dict
+
     if request.method == 'POST':
         if 'file' in request.files:
             file = request.files['file']
@@ -58,8 +73,8 @@ def home():
                 try:
                     original_df = current_df.copy()
                 except AttributeError:
-                    # flash(f"Failed to import file {file.filename}. Please try again later or choose a different file.")
-                    global_warnings = [f"Failed to import file {file.filename}. Please try again later or choose a different file."]
+                    global_warnings = [
+                        f"Failed to import file {file.filename}. Please try again later or choose a different file."]
                     return render_template('home.html', global_warnings=global_warnings)
                 current_filename = filename
         elif 's3_uri' in request.form:
@@ -71,16 +86,56 @@ def home():
     return render_template('home.html')
 
 
+@app.route('/settings', methods=['GET', 'POST'])
+def settings():
+    if request.method == 'POST':
+        # Get the current settings from the session
+        settings = session.get('settings', DEFAULT_SETTINGS)
+
+        # Iterate through the submitted form data and update settings
+        for key, value in request.form.items():
+            if key in settings:
+                if settings[key]['type'] == 'range':
+                    settings[key]['value'] = float(value)
+                elif settings[key]['type'] == 'checkbox':
+                    settings[key]['value'] = True
+                else:
+                    settings[key]['value'] = value
+
+        # Handle unchecked checkboxes, which aren't in the form data
+        for key, setting in settings.items():
+            if setting['type'] == 'checkbox' and key not in request.form:
+                settings[key]['value'] = False
+
+        # Save the updated settings back to the session
+        session['settings'] = settings
+
+        return redirect(url_for('settings'))
+
+    return render_template('settings.html', settings=session.get('settings', DEFAULT_SETTINGS))
+
+
 @app.route('/display')
 def display():
     global current_df, current_filename
     if current_df is None:
         flash("No file loaded. Please upload or provide S3 URI.")
         return redirect(url_for('home'))
+
+    # Retrieve the null ratio from the session to pass to the template
+    null_ratio_alert_threshold = session.get('settings', DEFAULT_SETTINGS)['null_ratio_alert_threshold']['value']
+
     dtypes = current_df.dtypes.astype(str).to_dict()
     dtypes = {k: v if v != 'object' else 'string' for k, v in dtypes.items()}
     html_table = current_df.to_html(classes='table table-dark table-striped text-center', index=False)
-    return render_template('display.html', tables=Markup(html_table), dtypes=dtypes, filename=current_filename)
+
+    return render_template(
+        'display.html',
+        tables=Markup(html_table),
+        dtypes=dtypes,
+        filename=current_filename,
+        NULL_RATIO_ALERT_THRESHOLD=null_ratio_alert_threshold  # Pass the dynamic value
+    )
 
 
 @app.route('/check_conversion', methods=['POST'])
@@ -97,6 +152,11 @@ def check_conversion():
         return jsonify({'error': 'Column not found.'}), 400
 
     warning = None
+
+    # Get the dynamic threshold from the session
+    settings = session.get('settings', DEFAULT_SETTINGS)
+    null_ratio_alert_threshold = settings['null_ratio_alert_threshold']['value']
+
     try:
         if new_type == 'int':
             converted = pd.to_numeric(current_df[column], errors='coerce', downcast='integer').astype('Int32')
@@ -111,9 +171,9 @@ def check_conversion():
         else:
             return jsonify({'warning': None})
 
-        # Perform the null ratio check
+        # Perform the null ratio check using the dynamic value
         null_ratio = converted.isna().sum() / len(converted)
-        if null_ratio > NULL_RATIO_ALERT_THRESHOLD:
+        if null_ratio > null_ratio_alert_threshold:
             warning = f"Conversion will result in {null_ratio:.2%} nulls."
 
     except Exception:
@@ -128,6 +188,10 @@ def change_dtypes():
     if current_df is None:
         flash("No file loaded to modify.")
         return redirect(url_for('home'))
+
+    # Get the dynamic threshold from the session
+    settings = session.get('settings', DEFAULT_SETTINGS)
+    null_ratio_alert_threshold = settings['null_ratio_alert_threshold']['value']
 
     dtype_options = ['string', 'int', 'float', 'bool', 'datetime']
     if request.method == 'POST':
@@ -152,8 +216,9 @@ def change_dtypes():
                         continue
 
                     null_ratio = converted.isna().sum() / len(converted)
-                    if null_ratio > NULL_RATIO_ALERT_THRESHOLD:
-                        warnings.append(f"Column '{col}' conversion to {new_type} will result in {null_ratio:.2%} nulls.")
+                    if null_ratio > null_ratio_alert_threshold:
+                        warnings.append(
+                            f"Column '{col}' conversion to {new_type} will result in {null_ratio:.2%} nulls.")
 
                     changes[col] = converted
                 except Exception as e:
@@ -169,7 +234,8 @@ def change_dtypes():
 
     current_dtypes = current_df.dtypes.astype(str).to_dict()
     current_dtypes = {k: v if v != 'object' else 'string' for k, v in current_dtypes.items()}
-    return render_template('change_dtypes.html', columns=current_df.columns, dtypes=current_dtypes, options=dtype_options)
+    return render_template('change_dtypes.html', columns=current_df.columns, dtypes=current_dtypes,
+                           options=dtype_options)
 
 
 @app.route('/revert_dtypes')
@@ -198,7 +264,8 @@ def publish():
             elif fmt == 'parquet':
                 current_df.to_parquet(buf, index=False)
                 buf.seek(0)
-                return send_file(buf, mimetype='application/octet-stream', as_attachment=True, download_name='data.parquet')
+                return send_file(buf, mimetype='application/octet-stream', as_attachment=True,
+                                 download_name='data.parquet')
         elif 's3_uri' in request.form:
             s3_uri = request.form['s3_uri']
             s3 = boto3.client('s3')
