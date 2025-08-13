@@ -5,6 +5,7 @@ import pandas as pd
 import os
 import io
 import boto3
+import copy
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
@@ -88,11 +89,15 @@ def home():
 
 @app.route('/settings', methods=['GET', 'POST'])
 def settings():
-    if request.method == 'POST':
-        # Get the current settings from the session
-        settings = session.get('settings', DEFAULT_SETTINGS)
+    # Always ensure settings in session contain only the defaults' keys
+    session['settings'] = {
+        key: session.get('settings', {}).get(key, copy.deepcopy(DEFAULT_SETTINGS[key]))
+        for key in DEFAULT_SETTINGS
+    }
 
-        # Iterate through the submitted form data and update settings
+    settings = session['settings']  # safe, filtered settings
+
+    if request.method == 'POST':
         for key, value in request.form.items():
             if key in settings:
                 if settings[key]['type'] == 'range':
@@ -102,17 +107,15 @@ def settings():
                 else:
                     settings[key]['value'] = value
 
-        # Handle unchecked checkboxes, which aren't in the form data
+        # Handle unchecked checkboxes
         for key, setting in settings.items():
             if setting['type'] == 'checkbox' and key not in request.form:
-                settings[key]['value'] = False
+                setting['value'] = False
 
-        # Save the updated settings back to the session
         session['settings'] = settings
-
         return redirect(url_for('settings'))
 
-    return render_template('settings.html', settings=session.get('settings', DEFAULT_SETTINGS))
+    return render_template('settings.html', settings=settings)
 
 
 @app.route('/display')
