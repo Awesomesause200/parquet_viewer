@@ -1,0 +1,216 @@
+# flask_parquet_app.py
+from flask import Flask, render_template, request, redirect, url_for, send_file, flash, jsonify
+from markupsafe import Markup
+import pandas as pd
+import os
+import io
+import boto3
+from werkzeug.utils import secure_filename
+
+app = Flask(__name__)
+app.secret_key = 'your_secret_key_here'
+
+UPLOAD_FOLDER = 'uploads'
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+global_warnings: list = []
+
+# Globals to hold the current dataframe and its filename
+current_df: pd.DataFrame = pd.DataFrame()
+original_df: pd.DataFrame = pd.DataFrame()
+current_filename: str | None = None
+
+# Threshold for conversion null ratio alert (e.g., 0.05 for 5%)
+NULL_RATIO_ALERT_THRESHOLD = 0.05
+
+
+# Load from S3 or local file
+def load_dataframe(file, is_s3=False):
+    if is_s3:
+        s3 = boto3.client('s3')
+        bucket, key = file.replace("s3://", "").split("/", 1)
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        if key.endswith(".parquet"):
+            return pd.read_parquet(io.BytesIO(obj['Body'].read()))
+        elif key.endswith(".csv"):
+            return pd.read_csv(io.StringIO(obj['Body'].read().decode()))
+    else:
+        if file.name.endswith(".parquet"):
+            return pd.read_parquet(file)
+        elif file.name.endswith(".csv"):
+            return pd.read_csv(file)
+    return None
+
+
+@app.route('/', methods=['GET', 'POST'])
+def home():
+    global current_df, original_df, current_filename, global_warnings
+    global_warnings = []
+    if request.method == 'POST':
+        if 'file' in request.files:
+            file = request.files['file']
+            if file.filename:
+                filename = secure_filename(file.filename)
+                filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                file.save(filepath)
+                with open(filepath, 'rb') as f:
+                    current_df = load_dataframe(f)
+                try:
+                    original_df = current_df.copy()
+                except AttributeError:
+                    # flash(f"Failed to import file {file.filename}. Please try again later or choose a different file.")
+                    global_warnings = [f"Failed to import file {file.filename}. Please try again later or choose a different file."]
+                    return render_template('home.html', global_warnings=global_warnings)
+                current_filename = filename
+        elif 's3_uri' in request.form:
+            s3_uri = request.form['s3_uri']
+            current_df = load_dataframe(s3_uri, is_s3=True)
+            original_df = current_df.copy()
+            current_filename = s3_uri
+        return redirect(url_for('display'))
+    return render_template('home.html')
+
+
+@app.route('/display')
+def display():
+    global current_df, current_filename
+    if current_df is None:
+        flash("No file loaded. Please upload or provide S3 URI.")
+        return redirect(url_for('home'))
+    dtypes = current_df.dtypes.astype(str).to_dict()
+    html_table = current_df.to_html(classes='table table-dark table-striped text-center', index=False)
+    return render_template('display.html', tables=Markup(html_table), dtypes=dtypes, filename=current_filename)
+
+
+@app.route('/check_conversion', methods=['POST'])
+def check_conversion():
+    global current_df
+    if current_df is None:
+        return jsonify({'error': 'No file loaded.'}), 400
+
+    data = request.get_json()
+    column = data.get('column')
+    new_type = data.get('new_dtype')
+
+    if column not in current_df.columns:
+        return jsonify({'error': 'Column not found.'}), 400
+
+    warning = None
+    try:
+        if new_type == 'int':
+            converted = pd.to_numeric(current_df[column], errors='coerce', downcast='integer').astype('Int32')
+        elif new_type == 'float':
+            converted = pd.to_numeric(current_df[column], errors='coerce', downcast='float').astype('float32')
+        elif new_type == 'bool':
+            converted = current_df[column].astype('boolean')
+        elif new_type == 'datetime':
+            converted = pd.to_datetime(current_df[column], errors='coerce')
+        elif new_type == 'string':
+            converted = current_df[column].astype('string')
+        else:
+            return jsonify({'warning': None})
+
+        # Perform the null ratio check
+        null_ratio = converted.isna().sum() / len(converted)
+        if null_ratio > NULL_RATIO_ALERT_THRESHOLD:
+            warning = f"Conversion will result in {null_ratio:.2%} nulls."
+
+    except Exception:
+        warning = f"Conversion to {new_type} will fail."
+
+    return jsonify({'warning': warning})
+
+
+@app.route('/change_dtypes', methods=['GET', 'POST'])
+def change_dtypes():
+    global current_df
+    if current_df is None:
+        flash("No file loaded to modify.")
+        return redirect(url_for('home'))
+
+    dtype_options = ['string', 'int', 'float', 'bool', 'datetime']
+    if request.method == 'POST':
+        changes = {}
+        warnings = []
+
+        for col in current_df.columns:
+            new_type = request.form.get(col)
+            if new_type and new_type != 'no_change':
+                try:
+                    if new_type == 'int':
+                        converted = pd.to_numeric(current_df[col], errors='coerce', downcast='integer').astype('Int32')
+                    elif new_type == 'float':
+                        converted = pd.to_numeric(current_df[col], errors='coerce', downcast='float').astype('float32')
+                    elif new_type == 'bool':
+                        converted = current_df[col].astype('boolean')
+                    elif new_type == 'datetime':
+                        converted = pd.to_datetime(current_df[col], errors='coerce')
+                    elif new_type == 'string':
+                        converted = current_df[col].astype('string')
+                    else:
+                        continue
+
+                    null_ratio = converted.isna().sum() / len(converted)
+                    if null_ratio > NULL_RATIO_ALERT_THRESHOLD:
+                        warnings.append(f"Column '{col}' conversion to {new_type} will result in {null_ratio:.2%} nulls.")
+
+                    changes[col] = converted
+                except Exception as e:
+                    flash(f"Failed to convert column {col} to {new_type}: {e}")
+
+        for col, new_col in changes.items():
+            current_df[col] = new_col
+
+        for warning in warnings:
+            flash(warning)
+
+        return redirect(url_for('display'))
+
+    current_dtypes = current_df.dtypes.astype(str).to_dict()
+    return render_template('change_dtypes.html', columns=current_df.columns, dtypes=current_dtypes, options=dtype_options)
+
+
+@app.route('/revert_dtypes')
+def revert_dtypes():
+    global current_df, original_df
+    if original_df is not None:
+        current_df = original_df.copy()
+        flash("Data types reverted to original.")
+    return redirect(url_for('display'))
+
+
+@app.route('/publish', methods=['GET', 'POST'])
+def publish():
+    global current_df, current_filename
+    if current_df is None:
+        flash("No data loaded to publish.")
+        return redirect(url_for('home'))
+    if request.method == 'POST':
+        fmt = request.form['format']
+        if 'download' in request.form:
+            buf = io.BytesIO()
+            if fmt == 'csv':
+                current_df.to_csv(buf, index=False)
+                buf.seek(0)
+                return send_file(buf, mimetype='text/csv', as_attachment=True, download_name='data.csv')
+            elif fmt == 'parquet':
+                current_df.to_parquet(buf, index=False)
+                buf.seek(0)
+                return send_file(buf, mimetype='application/octet-stream', as_attachment=True, download_name='data.parquet')
+        elif 's3_uri' in request.form:
+            s3_uri = request.form['s3_uri']
+            s3 = boto3.client('s3')
+            bucket, key = s3_uri.replace("s3://", "").split("/", 1)
+            buf = io.BytesIO()
+            if fmt == 'csv':
+                current_df.to_csv(buf, index=False)
+            elif fmt == 'parquet':
+                current_df.to_parquet(buf, index=False)
+            buf.seek(0)
+            s3.upload_fileobj(buf, bucket, key)
+            flash(f"File uploaded to {s3_uri}")
+    return render_template('publish.html', filename=current_filename)
+
+
+if __name__ == '__main__':
+    app.run(debug=True)

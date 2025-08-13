@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Change Column Data Types</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <style>
+        .warning-column {
+            width: 250px; /* Adjust this width as needed */
+            min-width: 250px;
+            max-width: 250px;
+            vertical-align: top; /* Aligns content to the top */
+        }
+        .warning-message {
+            word-wrap: break-word; /* Ensures long text breaks to the next line */
+            white-space: normal;
+        }
+    </style>
+</head>
+<body class="bg-dark text-light">
+
+<div class="container mt-5">
+    <h2 class="mb-4">Change Column Data Types</h2>
+
+    <div id="flash-container">
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                <div class="alert alert-warning mt-4">
+                    <ul class="mb-0">
+                        {% for message in messages %}
+                            <li>{{ message }}</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+            {% endif %}
+        {% endwith %}
+    </div>
+
+    <form method="POST" action="{{ url_for('change_dtypes') }}">
+        <table class="table table-bordered table-striped table-dark align-middle text-center">
+            <thead class="table-light text-dark">
+                <tr>
+                    <th>Column Name</th>
+                    <th>Current Type</th>
+                    <th>New Type</th>
+                    <th class="warning-column">Warnings</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for column in columns %}
+                <tr>
+                    <td>{{ column }}</td>
+                    <td>{{ dtypes[column] }}</td>
+                    <td>
+                        <select name="{{ column }}" class="form-select dtype-select" data-column="{{ column }}">
+                            <option value="no_change" selected>-- No Change --</option>
+                            {% for opt in options %}
+                                <option value="{{ opt }}">{{ opt }}</option>
+                            {% endfor %}
+                        </select>
+                    </td>
+                    <td class="warning-column">
+                        <div id="warning-{{ column }}"></div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        <div class="d-flex justify-content-between mt-4">
+            <a href="{{ url_for('display') }}" class="btn btn-secondary">Cancel</a>
+            <button type="submit" class="btn btn-primary">Submit Changes</button>
+        </div>
+    </form>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const selectElements = document.querySelectorAll('.dtype-select');
+
+    selectElements.forEach(select => {
+        select.addEventListener('change', function() {
+            const column = this.getAttribute('data-column');
+            const newDtype = this.value;
+            const warningDiv = document.getElementById(`warning-${column}`);
+
+            // Clear previous warning
+            warningDiv.innerHTML = '';
+
+            if (newDtype !== 'no_change') {
+                // Send an AJAX request to the server
+                fetch('/check_conversion', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({column: column, new_dtype: newDtype})
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.warning) {
+                        const warningElement = document.createElement('p');
+                        warningElement.classList.add('text-warning', 'm-0', 'warning-message');
+                        warningElement.innerText = data.warning;
+                        warningDiv.appendChild(warningElement);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    warningDiv.innerHTML = `<p class="text-danger m-0 warning-message">Failed to check conversion.</p>`;
+                });
+            }
+        });
+    });
+});
+</script>
+
+</body>
+</html>

@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>View Data - {{ filename }}</title>
+    <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/dataTables.bootstrap5.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <style>
+        body {
+            background-color: #1e1e2e;
+            color: #f8f8f2;
+        }
+        .table-container {
+            padding: 20px;
+        }
+        th, td {
+            text-align: center !important;
+        }
+        .dataTables_filter input {
+            background-color: #2e2e3e;
+            border: 1px solid #555;
+            color: #f8f8f2;
+        }
+        .dataTables_wrapper .dataTables_paginate .paginate_button {
+            color: #f8f8f2 !important;
+        }
+
+        /* The main table styling */
+        table.dataframe {
+            width: 100% !important;
+        }
+        /* Force the DataTables scroll wrapper to expand */
+        div.dataTables_wrapper {
+            width: 100%;
+        }
+        div.dataTables_scrollBody {
+            overflow-x: auto !important;
+        }
+
+        /* Custom styling for the modal table */
+        #uniqueValuesModal .modal-body {
+            padding: 10px;
+        }
+        #uniqueValuesTable {
+            width: 100% !important; /* Forces the table to fill the modal body */
+            margin: 0; /* Removes any default margin */
+        }
+        #uniqueValuesTable_wrapper {
+            width: 100% !important;
+        }
+    </style>
+</head>
+<body>
+    <div class="container-fluid table-container">
+        <h3>Data Viewer - V1</h3>
+        <h6>By Jarred Ofiana</h6>
+        <hr>
+        <div class="row">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h4>{{ filename }}</h4>
+                <div>
+                    <a href="{{ url_for('change_dtypes') }}" class="btn btn-outline-info me-2">Change Column Types</a>
+                    <a href="{{ url_for('revert_dtypes') }}" class="btn btn-outline-warning me-2">Revert Types</a>
+                    <a href="{{ url_for('publish') }}" class="btn btn-outline-success me-2">Publish Changes</a>
+                    <a href="{{ url_for('home') }}" class="btn btn-outline-danger me-2">Change File</a>
+                </div>
+            </div>
+            <div class="col-md-9" style="overflow-x: auto;">
+                {{ tables|safe }}
+            </div>
+            <div class="col-md-3">
+                <h5>Column Types</h5>
+                <ul class="list-group">
+                    {% for col, dtype in dtypes.items() %}
+                        <li class="list-group-item bg-dark text-light d-flex justify-content-between">
+                            <span>{{ col }}</span> <span>{{ dtype }}</span>
+                        </li>
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="helpModal" tabindex="-1" aria-labelledby="helpModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content bg-dark text-light">
+            <div class="modal-header">
+                <h5 class="modal-title" id="helpModalLabel">Data Viewer Guide</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <h5>Main Table Search</h5>
+                <p>The search bar for the main table supports powerful filtering:</p>
+                <ul>
+                    <li><b>Search Modes</b>: To the left of the search bar, you can toggle between "Smart Search" (default) and "Regex Search."
+                        <ul>
+                            <li><b>Smart Search (S icon)</b>: Breaks the search term into words and finds rows that contain all of them, regardless of order. It's great for natural language searches.</li>
+                            <li><b>Regex Search (R icon)</b>: Treats your input as a regular expression for advanced pattern matching. Use `^` for "starts with," `$` for "ends with," `|` for "OR," etc.</li>
+                        </ul>
+                    </li>
+                    <li><b>Excluding Terms</b>: Use a hyphen (`-`) before a word to exclude it. For example, `apple -red` will find rows with "apple" but not "red".</li>
+                    <li><b>Exact Phrase Search</b>: Enclose your search in double quotes (`"`). For example, `"New York"` will only find the exact phrase "New York".</li>
+                </ul>
+                <hr>
+                <h5>Column Unique Values</h5>
+                <p>To see all unique values in a specific column, simply <b>double-click</b> the column header. A pop-up window will appear with a scrollable and searchable list of every unique value in that column.</p>
+                <hr>
+                <h5>Change Datatypes Page</h5>
+                <p>This page allows you to modify the data types of your columns. Before you submit your changes, a real-time warning system provides feedback on potential issues:</p>
+                <ul>
+                    <li><b>Null Ratio Warning</b>: If converting a column to a new type (e.g., a text column to an integer) would result in a significant number of missing values (nulls), a warning will appear. The threshold is set to alert you if more than <strong>{{ NULL_RATIO_ALERT_THRESHOLD|default(0.05) * 100 }}%</strong> of the values will become null.</li>
+                    <li><b>Conversion Failure Warning</b>: If the conversion of a column to a new data type is not possible for any reason, a warning will be displayed to indicate the failure. (i.e. converting a numerical column to a boolean column.)</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+
+    <div class="modal fade" id="uniqueValuesModal" tabindex="-1" aria-labelledby="uniqueValuesModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
+            <div class="modal-content bg-dark text-light">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="uniqueValuesModalLabel">Unique Values for Column</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="text" id="uniqueValuesSearch" class="form-control mb-3" placeholder="Search unique values...">
+                    <table id="uniqueValuesTable" class="table table-dark table-striped">
+                        <thead>
+                            <tr>
+                                <th id="uniqueValueSort">
+                                    Unique Values
+                                    <span class="sort-icon float-end"></span>
+                                </th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
+<script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+<script src="https://cdn.datatables.net/1.13.6/js/dataTables.bootstrap5.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+    $(document).ready(function () {
+        const table = $('table.dataframe').DataTable({
+            "scrollX": true,
+            "paging": true,
+            "pageLength": 25,
+            "search": {
+                "regex": false,
+                "smart": true
+            }
+        });
+
+        $('table.dataframe thead th').on('dblclick', function () {
+            const columnIndex = table.column($(this).index()).index();
+            const allColumnData = table.column(columnIndex, { search: 'applied' }).data().unique().sort();
+
+            showUniqueValuesModal(table.column(columnIndex).header().textContent, allColumnData);
+        });
+
+        const filterDiv = $('.dataTables_filter');
+        filterDiv.addClass('d-flex align-items-center');
+
+        filterDiv.prepend(`
+            <div class="btn-group me-2" role="group">
+                <button type="button" class="btn btn-primary btn-sm active" id="smartSearchBtn" title="Toggle Smart Search">
+                    <svg height="15px" width="15px" version="1.1" id="_x32_" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 512 512" xml:space="preserve" fill="#FFFFFF"><g id="SVGRepo_bgCarrier" stroke-width="0"></g><g id="SVGRepo_tracerCarrier" stroke-linecap="round" stroke-linejoin="round"></g><g id="SVGRepo_iconCarrier"> <style type="text/css"> .st0{fill:#FFFFFF;} </style> <g> <path class="st0" d="M332.998,291.918c52.2-71.895,45.941-173.338-18.834-238.123c-71.736-71.728-188.468-71.728-260.195,0 c-71.746,71.745-71.746,188.458,0,260.204c64.775,64.775,166.218,71.034,238.104,18.844l14.222,14.203l40.916-40.916 L332.998,291.918z M278.488,278.333c-52.144,52.134-136.699,52.144-188.852,0c-52.152-52.153-52.152-136.717,0-188.861 c52.154-52.144,136.708-52.144,188.852,0C330.64,141.616,330.64,226.18,278.488,278.333z"></path> <path class="st0" d="M109.303,119.216c-27.078,34.788-29.324,82.646-6.756,119.614c2.142,3.489,6.709,4.603,10.208,2.46 c3.49-2.142,4.594-6.709,2.462-10.198v0.008c-19.387-31.7-17.45-72.962,5.782-102.771c2.526-3.228,1.946-7.898-1.292-10.405 C116.48,115.399,111.811,115.979,109.303,119.216z"></path> <path class="st0" d="M501.499,438.591L363.341,315.178l-47.98,47.98l123.403,138.168c12.548,16.234,35.144,13.848,55.447-6.456 C514.505,474.576,517.743,451.138,501.499,438.591z"></path> </g> </g></svg>
+                </button>
+                <button type="button" class="btn btn-outline-primary btn-sm" id="regexSearchBtn" title="Toggle Regex Search">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="15px" height="15px" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><g id="SVGRepo_bgCarrier" stroke-width="0"></g><g id="SVGRepo_tracerCarrier" stroke-linecap="round" stroke-linejoin="round"></g><g id="SVGRepo_iconCarrier"> <path d="M17 3v10"></path> <path d="M12.67 5.5l8.66 5"></path> <path d="M12.67 10.5l8.66-5"></path> <path d="M9 17a2 2 0 00-2-2H5a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2v-2z"></path> </g></svg>
+                </button>
+            </div>
+            <button type="button" class="btn btn-outline-primary me-2" data-bs-toggle="modal" data-bs-target="#helpModal" title="Help Guide">
+                <svg height="14px" width="14px" version="1.1" id="_x32_" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 512 512" xml:space="preserve" fill="#000000"><g id="SVGRepo_bgCarrier" stroke-width="0"></g><g id="SVGRepo_tracerCarrier" stroke-linecap="round" stroke-linejoin="round"></g><g id="SVGRepo_iconCarrier"> <style type="text/css"> .st0{fill:#FFFFFF;} </style> <g> <path class="st0" d="M256,0C114.616,0,0,114.612,0,256s114.616,256,256,256s256-114.612,256-256S397.385,0,256,0z M207.678,378.794 c0-17.612,14.281-31.893,31.893-31.893c17.599,0,31.88,14.281,31.88,31.893c0,17.595-14.281,31.884-31.88,31.884 C221.959,410.678,207.678,396.389,207.678,378.794z M343.625,218.852c-3.596,9.793-8.802,18.289-14.695,25.356 c-11.847,14.148-25.888,22.718-37.442,29.041c-7.719,4.174-14.533,7.389-18.769,9.769c-2.905,1.604-4.479,2.95-5.256,3.826 c-0.768,0.926-1.029,1.306-1.496,2.826c-0.273,1.009-0.558,2.612-0.558,5.091c0,6.868,0,12.512,0,12.512 c0,6.472-5.248,11.728-11.723,11.728h-28.252c-6.475,0-11.732-5.256-11.732-11.728c0,0,0-5.645,0-12.512 c0-6.438,0.752-12.744,2.405-18.777c1.636-6.008,4.215-11.718,7.508-16.694c6.599-10.083,15.542-16.802,23.984-21.48 c7.401-4.074,14.723-7.455,21.516-11.281c6.789-3.793,12.843-7.91,17.302-12.372c2.988-2.975,5.31-6.05,7.087-9.52 c2.335-4.628,3.955-10.067,3.992-18.389c0.012-2.463-0.698-5.702-2.632-9.405c-1.926-3.686-5.066-7.694-9.264-11.29 c-8.45-7.248-20.843-12.545-35.054-12.521c-16.285,0.058-27.186,3.876-35.587,8.62c-8.36,4.776-11.029,9.595-11.029,9.595 c-4.268,3.718-10.603,3.85-15.025,0.314l-21.71-17.397c-2.719-2.173-4.322-5.438-4.396-8.926c-0.063-3.479,1.425-6.81,4.061-9.099 c0,0,6.765-10.43,22.451-19.38c15.62-8.992,36.322-15.488,61.236-15.429c20.215,0,38.839,5.562,54.268,14.661 c15.434,9.148,27.897,21.744,35.851,36.876c5.281,10.074,8.525,21.43,8.533,33.38C349.211,198.042,347.248,209.058,343.625,218.852 z"></path> </g> </g></svg>
+            </button>
+        `);
+
+        // Helper function to set the search mode and button styles
+        function set_search_mode(is_regex) {
+            const searchValue = $('.dataTables_filter input').val();
+
+            table.search(searchValue, is_regex, !is_regex).draw();
+
+            // Update the button classes to show which mode is active
+            if (is_regex) {
+                $('#regexSearchBtn').removeClass('btn-outline-primary').addClass('btn-primary active');
+                $('#smartSearchBtn').removeClass('btn-primary active').addClass('btn-outline-primary');
+            } else {
+                $('#smartSearchBtn').removeClass('btn-outline-primary').addClass('btn-primary active');
+                $('#regexSearchBtn').removeClass('btn-primary active').addClass('btn-outline-primary');
+            }
+        }
+
+        $('#smartSearchBtn').on('click', function() {
+            set_search_mode(false); // Call with 'false' to enable smart search
+        });
+
+        $('#regexSearchBtn').on('click', function() {
+            set_search_mode(true); // Call with 'true' to enable regex search
+        });
+
+        function showUniqueValuesModal(columnName, uniqueValues) {
+            const modalTitle = $('#uniqueValuesModalLabel');
+            const modalTableBody = $('#uniqueValuesTable tbody');
+
+            modalTitle.text(`Unique Values for "${columnName}"`);
+
+            if ($.fn.DataTable.isDataTable('#uniqueValuesTable')) {
+                $('#uniqueValuesTable').DataTable().destroy();
+            }
+            modalTableBody.empty();
+
+            const data = uniqueValues.map(value => [value]);
+
+            const modalDataTable = $('#uniqueValuesTable').DataTable({
+                data: data,
+                "paging": true,
+                "pageLength": 100,
+                "lengthChange": false,
+                "searching": true,
+                "info": true,
+                "ordering": true,
+                "order": [[0, 'asc']], // Default sort order
+                "dom": 'rt<"bottom"ip><"clear">'
+            });
+
+            $('#uniqueValuesSearch').on('keyup', function() {
+                modalDataTable.search($(this).val()).draw();
+            });
+
+            const uniqueValuesModal = new bootstrap.Modal(document.getElementById('uniqueValuesModal'));
+            uniqueValuesModal.show();
+        }
+    });
+</script>
+</body>
+</html>
