@@ -7,13 +7,14 @@ import io
 import boto3
 import copy
 from werkzeug.utils import secure_filename
+from configuration_manager import ConfigManager
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('flask_secret_key')
+app.secret_key = os.environ.get("flask_secret_key")
 
-UPLOAD_FOLDER = 'uploads'
+UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 global_warnings: list = []
 
 # Globals to hold the current dataframe and its filename
@@ -22,29 +23,20 @@ original_df: pd.DataFrame = pd.DataFrame()
 current_filename: str | None = None
 
 # Global dictionary for default settings. This is now the single source of truth.
-DEFAULT_SETTINGS = {
-    'null_ratio_alert_threshold': {
-        'name': 'Null Ratio Alert Threshold',
-        'type': 'range',
-        'value': 0.05,
-        'min': 0,
-        'max': 1,
-        'step': 0.01,
-        'description': 'Show a warning if converting a column creates more than this percentage of null values.'
-    }
-}
+global_configuration_manager = ConfigManager()
+DEFAULT_SETTINGS = global_configuration_manager.read_configuration()
 
 
 # Load from S3 or local file
 def load_dataframe(file, is_s3=False):
     if is_s3:
-        s3 = boto3.client('s3')
+        s3 = boto3.client("s3")
         bucket, key = file.replace("s3://", "").split("/", 1)
         obj = s3.get_object(Bucket=bucket, Key=key)
         if key.endswith(".parquet"):
-            return pd.read_parquet(io.BytesIO(obj['Body'].read()))
+            return pd.read_parquet(io.BytesIO(obj["Body"].read()))
         elif key.endswith(".csv"):
-            return pd.read_csv(io.StringIO(obj['Body'].read().decode()))
+            return pd.read_csv(io.StringIO(obj["Body"].read().decode()))
     else:
         if file.name.endswith(".parquet"):
             return pd.read_parquet(file)
@@ -53,87 +45,89 @@ def load_dataframe(file, is_s3=False):
     return None
 
 
-@app.route('/', methods=['GET', 'POST'])
+@app.route("/", methods=["GET", "POST"])
 def home():
     global current_df, original_df, current_filename, global_warnings
     global_warnings = []
 
-    # Initialize settings in the session if they don't exist
-    if 'settings' not in session:
-        session['settings'] = DEFAULT_SETTINGS.copy()  # Use .copy() to prevent modifying the global dict
+    # Initialize settings in the session if they don"t exist
+    if "settings" not in session:
+        session["settings"] = DEFAULT_SETTINGS.copy()  # Use .copy() to prevent modifying the global dict
 
-    if request.method == 'POST':
-        if 'file' in request.files:
-            file = request.files['file']
+    if request.method == "POST":
+        if "file" in request.files:
+            file = request.files["file"]
             if file.filename:
                 filename = secure_filename(file.filename)
-                filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
                 file.save(filepath)
-                with open(filepath, 'rb') as f:
+                with open(filepath, "rb") as f:
                     current_df = load_dataframe(f)
                 try:
                     original_df = current_df.copy()
                 except AttributeError:
                     global_warnings = [
                         f"Failed to import file {file.filename}. Please try again later or choose a different file."]
-                    return render_template('home.html', global_warnings=global_warnings)
+                    return render_template("home.html", global_warnings=global_warnings)
                 current_filename = filename
-        elif 's3_uri' in request.form:
-            s3_uri = request.form['s3_uri']
+        elif "s3_uri" in request.form:
+            s3_uri = request.form["s3_uri"]
             current_df = load_dataframe(s3_uri, is_s3=True)
             original_df = current_df.copy()
             current_filename = s3_uri
-        return redirect(url_for('display'))
-    return render_template('home.html')
+        return redirect(url_for("display"))
+    return render_template("home.html")
 
 
-@app.route('/settings', methods=['GET', 'POST'])
+@app.route("/settings", methods=["GET", "POST"])
 def settings():
-    # Always ensure settings in session contain only the defaults' keys
-    session['settings'] = {
-        key: session.get('settings', {}).get(key, copy.deepcopy(DEFAULT_SETTINGS[key]))
+    global global_configuration_manager
+    # Always ensure settings in session contains only the default keys
+    session["settings"] = {
+        key: session.get("settings", {}).get(key, copy.deepcopy(DEFAULT_SETTINGS[key]))
         for key in DEFAULT_SETTINGS
     }
 
-    settings = session['settings']  # safe, filtered settings
+    settings = session["settings"]  # safe, filtered settings
 
-    if request.method == 'POST':
+    if request.method == "POST":
         for key, value in request.form.items():
             if key in settings:
-                if settings[key]['type'] == 'range':
-                    settings[key]['value'] = float(value)
-                elif settings[key]['type'] == 'checkbox':
-                    settings[key]['value'] = True
+                if settings[key]["type"] == "range":
+                    settings[key]["value"] = float(value)
+                elif settings[key]["type"] == "checkbox":
+                    settings[key]["value"] = True
                 else:
-                    settings[key]['value'] = value
+                    settings[key]["value"] = value
 
         # Handle unchecked checkboxes
         for key, setting in settings.items():
-            if setting['type'] == 'checkbox' and key not in request.form:
-                setting['value'] = False
+            if setting["type"] == "checkbox" and key not in request.form:
+                setting["value"] = False
 
-        session['settings'] = settings
-        return redirect(url_for('settings'))
+        session["settings"] = settings
+        global_configuration_manager.configuration = settings
+        return redirect(url_for("settings"))
 
-    return render_template('settings.html', settings=settings)
+    return render_template("settings.html", settings=settings)
 
 
-@app.route('/display')
+@app.route("/display")
 def display():
     global current_df, current_filename
     if current_df is None:
         flash("No file loaded. Please upload or provide S3 URI.")
-        return redirect(url_for('home'))
+        return redirect(url_for("home"))
 
     # Retrieve the null ratio from the session to pass to the template
-    null_ratio_alert_threshold = session.get('settings', DEFAULT_SETTINGS)['null_ratio_alert_threshold']['value']
+    null_ratio_alert_threshold = session.get("settings", DEFAULT_SETTINGS)["null_ratio_alert_threshold"]["value"]
 
     dtypes = current_df.dtypes.astype(str).to_dict()
-    dtypes = {k: v if v != 'object' else 'string' for k, v in dtypes.items()}
-    html_table = current_df.to_html(classes='table table-dark table-striped text-center', index=False)
+    dtypes = {k: v if v != "object" else "string" for k, v in dtypes.items()}
+    html_table = current_df.to_html(classes="table table-dark table-striped text-center", index=False)
 
     return render_template(
-        'display.html',
+        "display.html",
         tables=Markup(html_table),
         dtypes=dtypes,
         filename=current_filename,
@@ -141,38 +135,38 @@ def display():
     )
 
 
-@app.route('/check_conversion', methods=['POST'])
+@app.route("/check_conversion", methods=["POST"])
 def check_conversion():
     global current_df
     if current_df is None:
-        return jsonify({'error': 'No file loaded.'}), 400
+        return jsonify({"error": "No file loaded."}), 400
 
     data = request.get_json()
-    column = data.get('column')
-    new_type = data.get('new_dtype')
+    column = data.get("column")
+    new_type = data.get("new_dtype")
 
     if column not in current_df.columns:
-        return jsonify({'error': 'Column not found.'}), 400
+        return jsonify({"error": "Column not found."}), 400
 
     warning = None
 
     # Get the dynamic threshold from the session
-    settings = session.get('settings', DEFAULT_SETTINGS)
-    null_ratio_alert_threshold = settings['null_ratio_alert_threshold']['value']
+    settings = session.get("settings", DEFAULT_SETTINGS)
+    null_ratio_alert_threshold = settings["null_ratio_alert_threshold"]["value"]
 
     try:
-        if new_type == 'int':
-            converted = pd.to_numeric(current_df[column], errors='coerce', downcast='integer').astype('Int32')
-        elif new_type == 'float':
-            converted = pd.to_numeric(current_df[column], errors='coerce', downcast='float').astype('float32')
-        elif new_type == 'bool':
-            converted = current_df[column].astype('boolean')
-        elif new_type == 'datetime':
-            converted = pd.to_datetime(current_df[column], errors='coerce')
-        elif new_type == 'string':
-            converted = current_df[column].astype('string')
+        if new_type == "int":
+            converted = pd.to_numeric(current_df[column], errors="coerce", downcast="integer").astype("Int32")
+        elif new_type == "float":
+            converted = pd.to_numeric(current_df[column], errors="coerce", downcast="float").astype("float32")
+        elif new_type == "bool":
+            converted = current_df[column].astype("boolean")
+        elif new_type == "datetime":
+            converted = pd.to_datetime(current_df[column], errors="coerce")
+        elif new_type == "string":
+            converted = current_df[column].astype("string")
         else:
-            return jsonify({'warning': None})
+            return jsonify({"warning": None})
 
         # Perform the null ratio check using the dynamic value
         null_ratio = converted.isna().sum() / len(converted)
@@ -182,39 +176,39 @@ def check_conversion():
     except Exception:
         warning = f"Conversion to {new_type} will fail."
 
-    return jsonify({'warning': warning})
+    return jsonify({"warning": warning})
 
 
-@app.route('/change_dtypes', methods=['GET', 'POST'])
+@app.route("/change_dtypes", methods=["GET", "POST"])
 def change_dtypes():
     global current_df
     if current_df is None:
         flash("No file loaded to modify.")
-        return redirect(url_for('home'))
+        return redirect(url_for("home"))
 
     # Get the dynamic threshold from the session
-    settings = session.get('settings', DEFAULT_SETTINGS)
-    null_ratio_alert_threshold = settings['null_ratio_alert_threshold']['value']
+    settings = session.get("settings", DEFAULT_SETTINGS)
+    null_ratio_alert_threshold = settings["null_ratio_alert_threshold"]["value"]
 
-    dtype_options = ['string', 'int', 'float', 'bool', 'datetime']
-    if request.method == 'POST':
+    dtype_options = ["string", "int", "float", "bool", "datetime"]
+    if request.method == "POST":
         changes = {}
         warnings = []
 
         for col in current_df.columns:
             new_type = request.form.get(col)
-            if new_type and new_type != 'no_change':
+            if new_type and new_type != "no_change":
                 try:
-                    if new_type == 'int':
-                        converted = pd.to_numeric(current_df[col], errors='coerce', downcast='integer').astype('Int32')
-                    elif new_type == 'float':
-                        converted = pd.to_numeric(current_df[col], errors='coerce', downcast='float').astype('float32')
-                    elif new_type == 'bool':
-                        converted = current_df[col].astype('boolean')
-                    elif new_type == 'datetime':
-                        converted = pd.to_datetime(current_df[col], errors='coerce')
-                    elif new_type == 'string':
-                        converted = current_df[col].astype('string')
+                    if new_type == "int":
+                        converted = pd.to_numeric(current_df[col], errors="coerce", downcast="integer").astype("Int32")
+                    elif new_type == "float":
+                        converted = pd.to_numeric(current_df[col], errors="coerce", downcast="float").astype("float32")
+                    elif new_type == "bool":
+                        converted = current_df[col].astype("boolean")
+                    elif new_type == "datetime":
+                        converted = pd.to_datetime(current_df[col], errors="coerce")
+                    elif new_type == "string":
+                        converted = current_df[col].astype("string")
                     else:
                         continue
 
@@ -233,56 +227,63 @@ def change_dtypes():
         for warning in warnings:
             flash(warning)
 
-        return redirect(url_for('display'))
+        return redirect(url_for("display"))
 
     current_dtypes = current_df.dtypes.astype(str).to_dict()
-    current_dtypes = {k: v if v != 'object' else 'string' for k, v in current_dtypes.items()}
-    return render_template('change_dtypes.html', columns=current_df.columns, dtypes=current_dtypes,
+    current_dtypes = {k: v if v != "object" else "string" for k, v in current_dtypes.items()}
+    return render_template("change_dtypes.html", columns=current_df.columns, dtypes=current_dtypes,
                            options=dtype_options)
 
 
-@app.route('/revert_dtypes')
+@app.route("/revert_dtypes")
 def revert_dtypes():
     global current_df, original_df
     if original_df is not None:
         current_df = original_df.copy()
         flash("Data types reverted to original.")
-    return redirect(url_for('display'))
+    return redirect(url_for("display"))
 
 
-@app.route('/publish', methods=['GET', 'POST'])
+@app.route("/publish", methods=["GET", "POST"])
 def publish():
     global current_df, current_filename
     if current_df is None:
         flash("No data loaded to publish.")
-        return redirect(url_for('home'))
-    if request.method == 'POST':
-        fmt = request.form['format']
-        if 'download' in request.form:
+        return redirect(url_for("home"))
+    if request.method == "POST":
+        fmt = request.form["format"]
+        filename = request.form.get("filename") or "data"
+        filename = os.path.splitext(filename)[0]
+        final_name = f"{filename}.{fmt}"
+        if "download" in request.form:
             buf = io.BytesIO()
-            if fmt == 'csv':
+            if fmt == "csv":
                 current_df.to_csv(buf, index=False)
                 buf.seek(0)
-                return send_file(buf, mimetype='text/csv', as_attachment=True, download_name='data.csv')
-            elif fmt == 'parquet':
+                return send_file(buf, mimetype="text/csv", as_attachment=True, download_name=final_name)
+            elif fmt == "parquet":
                 current_df.to_parquet(buf, index=False)
                 buf.seek(0)
-                return send_file(buf, mimetype='application/octet-stream', as_attachment=True,
-                                 download_name='data.parquet')
-        elif 's3_uri' in request.form:
-            s3_uri = request.form['s3_uri']
-            s3 = boto3.client('s3')
+                return send_file(buf, mimetype="application/octet-stream", as_attachment=True,
+                                 download_name=final_name)
+        elif "s3_uri" in request.form:
+            s3_uri = request.form["s3_uri"]
+            s3 = boto3.client("s3")
             bucket, key = s3_uri.replace("s3://", "").split("/", 1)
+            if not key.endswith(f".{fmt}"):
+                key += f".{fmt}"
             buf = io.BytesIO()
-            if fmt == 'csv':
+            if fmt == "csv":
                 current_df.to_csv(buf, index=False)
-            elif fmt == 'parquet':
+            elif fmt == "parquet":
                 current_df.to_parquet(buf, index=False)
             buf.seek(0)
             s3.upload_fileobj(buf, bucket, key)
             flash(f"File uploaded to {s3_uri}")
-    return render_template('publish.html', filename=current_filename)
+    return render_template("publish.html", 
+                           filename=current_filename, 
+                           default_filename=os.path.splitext(current_filename or "data")[0])
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run(debug=True)

@@ -23,6 +23,14 @@
         <option value="csv">CSV</option>
         <option value="parquet">Parquet</option>
       </select>
+      <label for="filename" class="form-label">Filename</label>
+      <input type="text"
+             class="form-control"
+             id="filename"
+             name="filename"
+             placeholder="{{ default_filename }}"
+             value="{{ default_filename }}"
+             onfocus="if(this.value=='{{ default_filename }}') this.value='';">
     </div>
     <div class="d-grid gap-2">
       <button type="submit" name="download" class="btn btn-primary">Download Locally</button>
