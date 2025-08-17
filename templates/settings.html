@@ -57,10 +57,10 @@
 
                         {% if setting['type'] == 'range' %}
                             <input type="range" class="form-range" id="{{ key }}" name="{{ key }}"
-                                value="{{ setting['value'] }}" min="{{ setting['min'] }}"
-                                max="{{ setting['max'] }}" step="{{ setting['step'] }}"
-                                oninput="document.getElementById('{{ key }}_value').innerText=this.value">
-                            <span id="{{ key }}_value">{{ setting['value'] }}</span>
+                                value="{{ setting['value'] * 100 }}" min="{{ setting['min'] * 100 }}"
+                                max="{{ setting['max'] * 100 }}" step="{{ setting['step'] * 100 }}"
+                                oninput="document.getElementById('{{ key }}_value').innerText = this.value + '%'">
+                            <span id="{{ key }}_value">{{ (setting['value'] * 100)|round(0) }}%</span>
                         {% elif setting['type'] == 'checkbox' %}
                             <div class="form-check form-switch">
                                 <input class="form-check-input" type="checkbox" id="{{ key }}" name="{{ key }}" {% if setting['value'] %}checked{% endif %}>

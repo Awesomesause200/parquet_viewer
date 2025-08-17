@@ -5,9 +5,9 @@ import pandas as pd
 import os
 import io
 import boto3
-import copy
 from werkzeug.utils import secure_filename
 from configuration_manager import ConfigManager
+from additional_utilites import merge_settings, read_data
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("flask_secret_key")
@@ -28,21 +28,25 @@ DEFAULT_SETTINGS = global_configuration_manager.read_configuration()
 
 
 # Load from S3 or local file
-def load_dataframe(file, is_s3=False):
+def load_dataframe(file, is_s3: bool = False):
     if is_s3:
         s3 = boto3.client("s3")
         bucket, key = file.replace("s3://", "").split("/", 1)
-        obj = s3.get_object(Bucket=bucket, Key=key)
-        if key.endswith(".parquet"):
-            return pd.read_parquet(io.BytesIO(obj["Body"].read()))
-        elif key.endswith(".csv"):
-            return pd.read_csv(io.StringIO(obj["Body"].read().decode()))
+        obj = s3.get_object(bucket, Key=key)
+        data = obj["Body"].read()
+        parquet_stream, csv_stream = io.BytesIO(data), io.StringIO(data.decode())
+        ext = key.split("/")[-1].lower() if "." in key else None
     else:
-        if file.name.endswith(".parquet"):
-            return pd.read_parquet(file)
-        elif file.name.endswith(".csv"):
-            return pd.read_csv(file)
-    return None
+        parquet_stream, csv_stream = file, file
+        ext = file.name.split(".")[-1].lower() if "." in file.name else None
+
+    # Attempt to read by file extension, otherwise read whichever stream works first
+    if ext == "parquet":
+        return read_data(pd.read_parquet, parquet_stream)
+    elif ext == "csv":
+        return read_data(pd.read_csv, csv_stream)
+    else:
+        return read_data(pd.read_parquet, parquet_stream) or read_data(pd.read_csv, csv_stream)
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -63,12 +67,20 @@ def home():
                 file.save(filepath)
                 with open(filepath, "rb") as f:
                     current_df = load_dataframe(f)
+
                 try:
-                    original_df = current_df.copy()
-                except AttributeError:
-                    global_warnings = [
-                        f"Failed to import file {file.filename}. Please try again later or choose a different file."]
+                    # Check if we got None returned (parser failed)
+                    if not isinstance(current_df, pd.DataFrame):
+                        global_warnings = [
+                            f"Failed to import file {file.filename} (invalid file type) . Please try again later or choose a different file.",
+                            "Acceptable formats: parquet, csv"]
+                        return render_template("home.html", global_warnings=global_warnings)
+                    else:
+                        original_df = current_df.copy()
+                except Exception as e:
+                    global_warnings = [f"Failed to parse file due to uncaught exception. {str(e)}"]
                     return render_template("home.html", global_warnings=global_warnings)
+
                 current_filename = filename
         elif "s3_uri" in request.form:
             s3_uri = request.form["s3_uri"]
@@ -82,34 +94,43 @@ def home():
 @app.route("/settings", methods=["GET", "POST"])
 def settings():
     global global_configuration_manager
-    # Always ensure settings in session contains only the default keys
-    session["settings"] = {
-        key: session.get("settings", {}).get(key, copy.deepcopy(DEFAULT_SETTINGS[key]))
-        for key in DEFAULT_SETTINGS
-    }
 
-    settings = session["settings"]  # safe, filtered settings
+    # Load saved settings from session (maybe empty or partial)
+    saved_settings = session.get("settings", {})
+
+    # Merge with defaults (favors saved settings from file system)
+    session["settings"] = merge_settings(DEFAULT_SETTINGS, saved_settings)
+    settings = session["settings"]
 
     if request.method == "POST":
         for key, value in request.form.items():
             if key in settings:
-                if settings[key]["type"] == "range":
-                    settings[key]["value"] = float(value)
-                elif settings[key]["type"] == "checkbox":
-                    settings[key]["value"] = True
-                else:
-                    settings[key]["value"] = value
+                setting = settings[key]
+                if isinstance(setting, dict):
+                    if setting.get("type") == "range":
+                        setting["value"] = float(value) / 100.0
+                    elif setting.get("type") == "checkbox":
+                        setting["value"] = True
+                    else:
+                        setting["value"] = value
+            else:
+                # Handling string/int type keys
+                settings[key] = value
 
         # Handle unchecked checkboxes
         for key, setting in settings.items():
-            if setting["type"] == "checkbox" and key not in request.form:
+            if isinstance(setting, dict) and setting.get("type", "") == "checkbox" and key not in request.form:
                 setting["value"] = False
 
+        # Update and save settings
+        print(settings)
         session["settings"] = settings
         global_configuration_manager.configuration = settings
+        global_configuration_manager.save_configuration()
         return redirect(url_for("settings"))
 
     return render_template("settings.html", settings=settings)
+
 
 
 @app.route("/display")
@@ -123,7 +144,7 @@ def display():
     null_ratio_alert_threshold = session.get("settings", DEFAULT_SETTINGS)["null_ratio_alert_threshold"]["value"]
 
     dtypes = current_df.dtypes.astype(str).to_dict()
-    dtypes = {k: v if v != "object" else "string" for k, v in dtypes.items()}
+    dtypes = {k: "string" if v == "object" else v for k, v in dtypes.items()}  # If it is an object dtype, denote string
     html_table = current_df.to_html(classes="table table-dark table-striped text-center", index=False)
 
     return render_template(
@@ -230,7 +251,7 @@ def change_dtypes():
         return redirect(url_for("display"))
 
     current_dtypes = current_df.dtypes.astype(str).to_dict()
-    current_dtypes = {k: v if v != "object" else "string" for k, v in current_dtypes.items()}
+    current_dtypes = {k: "string" if v == "object" else v for k, v in current_dtypes.items()}
     return render_template("change_dtypes.html", columns=current_df.columns, dtypes=current_dtypes,
                            options=dtype_options)
 
